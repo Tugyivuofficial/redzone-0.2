@@ -105,26 +105,8 @@ export function PlayPage() {
     setSuccess(null);
 
     try {
-      const { data: room, error: roomError } = await supabase
-        .from('match_rooms')
-        .insert({ mode, host_id: profile.id, status: 'waiting', max_players: getMaxPlayers(mode) })
-        .select()
-        .single();
-
-      if (roomError) throw roomError;
-
-      const { error: playerError } = await supabase.from('match_room_players').insert({
-        room_id: room.id,
-        profile_id: profile.id,
-        slot: 1,
-        is_ready: false,
-      });
-
-      if (playerError) {
-        await supabase.from('match_rooms').delete().eq('id', room.id);
-        throw playerError;
-      }
-
+      const { error } = await supabase.rpc('rz_create_room', { p_mode: mode });
+      if (error) throw error;
       setSuccess(`${mode} room үүслээ. Чи Team A slot 1 дээр орсон.`);
       await fetchRooms();
     } catch (err) {
@@ -140,50 +122,13 @@ export function PlayPage() {
       return;
     }
 
-    const players = room.players ?? [];
-    const alreadyJoined = players.some(player => player.profile_id === profile.id);
-    if (alreadyJoined) {
-      setError('Чи энэ room-д аль хэдийн орсон байна');
-      return;
-    }
-
-    if (players.length >= room.max_players) {
-      setError('Энэ room дүүрсэн байна');
-      return;
-    }
-
-    const half = halfSlots(room);
-    const teamStart = team === 'A' ? 1 : half + 1;
-    const teamEnd = team === 'A' ? half : room.max_players;
-    const usedSlots = new Set(players.map(player => player.slot));
-    let slot = teamStart;
-    while (slot <= teamEnd && usedSlots.has(slot)) slot += 1;
-
-    if (slot > teamEnd) {
-      setError(`Team ${team} дүүрсэн байна`);
-      return;
-    }
-
     setJoiningId(room.id);
     setError(null);
     setSuccess(null);
 
     try {
-      const { error } = await supabase.from('match_room_players').insert({
-        room_id: room.id,
-        profile_id: profile.id,
-        slot,
-        is_ready: false,
-      });
-
+      const { error } = await supabase.rpc('rz_join_room', { p_room_id: room.id, p_team: team });
       if (error) throw error;
-
-      const newCount = players.length + 1;
-      await supabase
-        .from('match_rooms')
-        .update({ status: newCount >= room.max_players ? 'full' : 'waiting' })
-        .eq('id', room.id);
-
       setSuccess(`Team ${team}-д амжилттай орлоо`);
       await fetchRooms();
     } catch (err) {
@@ -196,42 +141,12 @@ export function PlayPage() {
   const switchTeam = async (room: MatchRoom, team: 'A' | 'B') => {
     if (!profile) return;
 
-    const players = room.players ?? [];
-    const currentPlayer = players.find(player => player.profile_id === profile.id);
-    if (!currentPlayer) {
-      await joinRoom(room, team);
-      return;
-    }
-
-    const half = halfSlots(room);
-    const isAlreadyInTeam = team === 'A' ? currentPlayer.slot <= half : currentPlayer.slot > half;
-    if (isAlreadyInTeam) {
-      setError(`Чи аль хэдийн Team ${team}-д байна`);
-      return;
-    }
-
-    const teamStart = team === 'A' ? 1 : half + 1;
-    const teamEnd = team === 'A' ? half : room.max_players;
-    const usedSlots = new Set(players.filter(player => player.profile_id !== profile.id).map(player => player.slot));
-    let slot = teamStart;
-    while (slot <= teamEnd && usedSlots.has(slot)) slot += 1;
-
-    if (slot > teamEnd) {
-      setError(`Team ${team} дүүрсэн байна`);
-      return;
-    }
-
     setJoiningId(room.id);
     setError(null);
     setSuccess(null);
 
     try {
-      const { error } = await supabase
-        .from('match_room_players')
-        .update({ slot, is_ready: false })
-        .eq('room_id', room.id)
-        .eq('profile_id', profile.id);
-
+      const { error } = await supabase.rpc('rz_join_room', { p_room_id: room.id, p_team: team });
       if (error) throw error;
       setSuccess(`Team ${team} рүү шилжлээ`);
       await fetchRooms();
@@ -245,41 +160,14 @@ export function PlayPage() {
   const toggleReady = async (room: MatchRoom) => {
     if (!profile) return;
 
-    const players = room.players ?? [];
-    const currentPlayer = players.find(player => player.profile_id === profile.id);
-    if (!currentPlayer) {
-      setError('Эхлээд room-д орно уу');
-      return;
-    }
-
     setJoiningId(room.id);
     setError(null);
     setSuccess(null);
 
     try {
-      const nextReady = !currentPlayer.is_ready;
-      const { error } = await supabase
-        .from('match_room_players')
-        .update({ is_ready: nextReady })
-        .eq('room_id', room.id)
-        .eq('profile_id', profile.id);
-
+      const { error } = await supabase.rpc('rz_toggle_ready', { p_room_id: room.id });
       if (error) throw error;
-
-      const updatedPlayers = players.map(player =>
-        player.profile_id === profile.id ? { ...player, is_ready: nextReady } : player
-      );
-
-      const roomIsFull = updatedPlayers.length >= room.max_players;
-      const everyoneReady = roomIsFull && updatedPlayers.every(player => player.is_ready);
-
-      if (everyoneReady) {
-        await supabase.from('match_rooms').update({ status: 'live' }).eq('id', room.id);
-        setSuccess('Бүх тоглогч Ready боллоо. Match эхэллээ!');
-      } else {
-        setSuccess(nextReady ? 'Ready боллоо' : 'Ready цуцаллаа');
-      }
-
+      setSuccess('Ready төлөв шинэчлэгдлээ');
       await fetchRooms();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ready төлөв өөрчлөхөд алдаа гарлаа');
@@ -295,21 +183,9 @@ export function PlayPage() {
     setSuccess(null);
 
     try {
-      const { error } = await supabase
-        .from('match_room_players')
-        .delete()
-        .eq('room_id', room.id)
-        .eq('profile_id', profile.id);
-
+      const { error } = await supabase.rpc('rz_leave_room', { p_room_id: room.id });
       if (error) throw error;
-
-      await cleanupEmptyRoom(room.id);
-      const remainingCount = Math.max((room.players?.length ?? 1) - 1, 0);
-      if (remainingCount > 0 && room.status === 'full') {
-        await supabase.from('match_rooms').update({ status: 'waiting' }).eq('id', room.id);
-      }
-
-      setSuccess(remainingCount === 0 ? 'Room хоосон болсон тул устлаа' : 'Room-оос гарлаа');
+      setSuccess('Room-оос гарлаа');
       await fetchRooms();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Room-оос гарахад алдаа гарлаа');
@@ -324,7 +200,7 @@ export function PlayPage() {
     setError(null);
     setSuccess(null);
     try {
-      const { error } = await supabase.from('match_rooms').delete().eq('id', room.id);
+      const { error } = await supabase.rpc('rz_delete_room', { p_room_id: room.id });
       if (error) throw error;
       setSuccess('Room устлаа');
       await fetchRooms();

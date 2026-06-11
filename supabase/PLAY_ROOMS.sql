@@ -147,3 +147,204 @@ drop trigger if exists trg_delete_empty_match_room on match_room_players;
 create trigger trg_delete_empty_match_room
 after delete on match_room_players
 for each row execute function delete_empty_match_room();
+
+-- RPC FIX: use secure server-side functions for create/join/ready/leave/delete.
+-- This avoids client-side RLS/schema mismatch errors.
+
+create or replace function rz_current_profile_id()
+returns uuid
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_id uuid := auth.uid();
+  v_email text;
+begin
+  if v_id is null then
+    raise exception 'Not logged in';
+  end if;
+
+  select email into v_email from auth.users where id = v_id;
+
+  insert into public.profiles (id, username, role)
+  values (v_id, coalesce(split_part(v_email, '@', 1), 'player'), 'captain')
+  on conflict (id) do nothing;
+
+  return v_id;
+end;
+$$;
+
+create or replace function rz_create_room(p_mode text)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_profile uuid;
+  v_room uuid;
+  v_max int;
+begin
+  v_profile := rz_current_profile_id();
+
+  if p_mode not in ('2v2', '5v5') then
+    raise exception 'Invalid mode';
+  end if;
+
+  v_max := case when p_mode = '2v2' then 4 else 10 end;
+
+  insert into public.match_rooms (mode, host_id, status, max_players)
+  values (p_mode, v_profile, 'waiting', v_max)
+  returning id into v_room;
+
+  insert into public.match_room_players (room_id, profile_id, slot, is_ready)
+  values (v_room, v_profile, 1, false)
+  on conflict (room_id, profile_id) do update set slot = excluded.slot, is_ready = false;
+
+  return v_room;
+end;
+$$;
+
+create or replace function rz_join_room(p_room_id uuid, p_team text)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_profile uuid;
+  v_room public.match_rooms%rowtype;
+  v_half int;
+  v_start int;
+  v_end int;
+  v_slot int;
+  v_count int;
+begin
+  v_profile := rz_current_profile_id();
+
+  select * into v_room from public.match_rooms where id = p_room_id for update;
+  if not found then raise exception 'Room not found'; end if;
+  if v_room.status not in ('waiting', 'full') then raise exception 'Room is not joinable'; end if;
+  if p_team not in ('A', 'B') then raise exception 'Invalid team'; end if;
+
+  v_half := v_room.max_players / 2;
+  v_start := case when p_team = 'A' then 1 else v_half + 1 end;
+  v_end := case when p_team = 'A' then v_half else v_room.max_players end;
+
+  select s into v_slot
+  from generate_series(v_start, v_end) s
+  where not exists (
+    select 1 from public.match_room_players p
+    where p.room_id = p_room_id and p.slot = s and p.profile_id <> v_profile
+  )
+  order by s
+  limit 1;
+
+  if v_slot is null then raise exception 'Team is full'; end if;
+
+  insert into public.match_room_players (room_id, profile_id, slot, is_ready)
+  values (p_room_id, v_profile, v_slot, false)
+  on conflict (room_id, profile_id)
+  do update set slot = excluded.slot, is_ready = false;
+
+  select count(*) into v_count from public.match_room_players where room_id = p_room_id;
+  update public.match_rooms
+  set status = case when v_count >= v_room.max_players then 'full' else 'waiting' end,
+      updated_at = now()
+  where id = p_room_id;
+end;
+$$;
+
+create or replace function rz_toggle_ready(p_room_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_profile uuid;
+  v_max int;
+  v_count int;
+  v_ready int;
+begin
+  v_profile := rz_current_profile_id();
+
+  update public.match_room_players
+  set is_ready = not is_ready
+  where room_id = p_room_id and profile_id = v_profile;
+
+  if not found then raise exception 'Join room first'; end if;
+
+  select max_players into v_max from public.match_rooms where id = p_room_id;
+  select count(*), count(*) filter (where is_ready)
+  into v_count, v_ready
+  from public.match_room_players
+  where room_id = p_room_id;
+
+  update public.match_rooms
+  set status = case when v_count >= v_max and v_ready = v_count then 'live'
+                    when v_count >= v_max then 'full'
+                    else 'waiting' end,
+      updated_at = now()
+  where id = p_room_id;
+end;
+$$;
+
+create or replace function rz_leave_room(p_room_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_profile uuid;
+  v_host uuid;
+  v_count int;
+begin
+  v_profile := rz_current_profile_id();
+  select host_id into v_host from public.match_rooms where id = p_room_id;
+  if not found then return; end if;
+
+  -- If host leaves, remove the whole room.
+  if v_host = v_profile then
+    delete from public.match_rooms where id = p_room_id;
+    return;
+  end if;
+
+  delete from public.match_room_players where room_id = p_room_id and profile_id = v_profile;
+  select count(*) into v_count from public.match_room_players where room_id = p_room_id;
+
+  if v_count = 0 then
+    delete from public.match_rooms where id = p_room_id;
+  else
+    update public.match_rooms set status = 'waiting', updated_at = now() where id = p_room_id and status in ('full','live');
+  end if;
+end;
+$$;
+
+create or replace function rz_delete_room(p_room_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_profile uuid;
+begin
+  v_profile := rz_current_profile_id();
+  delete from public.match_rooms where id = p_room_id and host_id = v_profile;
+end;
+$$;
+
+grant execute on function rz_current_profile_id() to authenticated;
+grant execute on function rz_create_room(text) to authenticated;
+grant execute on function rz_join_room(uuid, text) to authenticated;
+grant execute on function rz_toggle_ready(uuid) to authenticated;
+grant execute on function rz_leave_room(uuid) to authenticated;
+grant execute on function rz_delete_room(uuid) to authenticated;
+
+-- Clean old broken rooms now.
+delete from public.match_rooms r
+where r.status in ('waiting', 'full', 'cancelled')
+  and not exists (select 1 from public.match_room_players p where p.room_id = r.id);
