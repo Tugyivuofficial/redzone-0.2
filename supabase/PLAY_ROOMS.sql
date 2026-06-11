@@ -431,3 +431,199 @@ grant execute on function rz_delete_room(uuid) to authenticated;
 delete from public.match_rooms r
 where r.status in ('waiting', 'full', 'cancelled')
   and not exists (select 1 from public.match_room_players p where p.room_id = r.id);
+
+-- Final match flow: captain-only Start Match + Result + Draw + automatic points.
+-- Safe to run multiple times.
+
+alter table public.profiles add column if not exists points int not null default 0;
+alter table public.teams add column if not exists points int not null default 0;
+alter table public.teams add column if not exists wins int not null default 0;
+alter table public.teams add column if not exists losses int not null default 0;
+alter table public.teams add column if not exists draws int not null default 0;
+alter table public.match_rooms add column if not exists winner_team text check (winner_team in ('A', 'B'));
+alter table public.match_rooms add column if not exists completed_at timestamptz;
+
+-- Ready should make the room FULL when everyone is ready, not LIVE automatically.
+-- Only the captain/host can start the match.
+create or replace function public.rz_toggle_ready(p_room_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_profile uuid;
+  v_max int;
+  v_count int;
+  v_ready int;
+begin
+  v_profile := rz_current_profile_id();
+
+  update public.match_room_players
+  set is_ready = not is_ready
+  where room_id = p_room_id and profile_id = v_profile;
+
+  if not found then raise exception 'Join room first'; end if;
+
+  select max_players into v_max from public.match_rooms where id = p_room_id;
+  select count(*), count(*) filter (where is_ready)
+  into v_count, v_ready
+  from public.match_room_players
+  where room_id = p_room_id;
+
+  update public.match_rooms
+  set status = case when v_count >= v_max and v_ready = v_count then 'full'
+                    else 'waiting' end,
+      updated_at = now()
+  where id = p_room_id and status in ('waiting','full');
+end;
+$$;
+
+create or replace function public.rz_start_room(p_room_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_profile uuid;
+  v_room public.match_rooms%rowtype;
+  v_count int;
+  v_ready int;
+begin
+  v_profile := rz_current_profile_id();
+
+  select * into v_room from public.match_rooms where id = p_room_id for update;
+  if not found then raise exception 'Room not found'; end if;
+  if v_room.host_id <> v_profile then raise exception 'Only host/captain can start match'; end if;
+  if v_room.status <> 'full' then raise exception 'Room must be full and ready'; end if;
+
+  select count(*), count(*) filter (where is_ready)
+  into v_count, v_ready
+  from public.match_room_players
+  where room_id = p_room_id;
+
+  if v_count <> v_room.max_players then raise exception 'Room is not full'; end if;
+  if v_ready <> v_count then raise exception 'All players must be ready'; end if;
+
+  update public.match_rooms
+  set status = 'live', updated_at = now()
+  where id = p_room_id;
+end;
+$$;
+
+create or replace function public.rz_submit_room_result(p_room_id uuid, p_winner_team text)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_profile uuid;
+  v_room public.match_rooms%rowtype;
+  v_half int;
+begin
+  v_profile := rz_current_profile_id();
+
+  select * into v_room from public.match_rooms where id = p_room_id for update;
+  if not found then raise exception 'Room not found'; end if;
+  if v_room.host_id <> v_profile then raise exception 'Only host/captain can submit result'; end if;
+  if v_room.status <> 'live' then raise exception 'Match must be live'; end if;
+  if p_winner_team not in ('A', 'B') then raise exception 'Invalid winner team'; end if;
+
+  v_half := v_room.max_players / 2;
+
+  update public.profiles pr
+  set points = coalesce(points, 0) + 10,
+      wins = coalesce(wins, 0) + 1,
+      updated_at = now()
+  where pr.id in (
+    select profile_id from public.match_room_players p
+    where p.room_id = p_room_id
+      and ((p_winner_team = 'A' and p.slot <= v_half) or (p_winner_team = 'B' and p.slot > v_half))
+  );
+
+  update public.profiles pr
+  set points = coalesce(points, 0) - 10,
+      losses = coalesce(losses, 0) + 1,
+      updated_at = now()
+  where pr.id in (
+    select profile_id from public.match_room_players p
+    where p.room_id = p_room_id
+      and ((p_winner_team = 'A' and p.slot > v_half) or (p_winner_team = 'B' and p.slot <= v_half))
+  );
+
+  update public.teams t
+  set points = coalesce(points, 0) + 10,
+      wins = coalesce(wins, 0) + 1,
+      updated_at = now()
+  where t.id in (
+    select distinct pr.team_id
+    from public.match_room_players p
+    join public.profiles pr on pr.id = p.profile_id
+    where p.room_id = p_room_id and pr.team_id is not null
+      and ((p_winner_team = 'A' and p.slot <= v_half) or (p_winner_team = 'B' and p.slot > v_half))
+  );
+
+  update public.teams t
+  set points = coalesce(points, 0) - 10,
+      losses = coalesce(losses, 0) + 1,
+      updated_at = now()
+  where t.id in (
+    select distinct pr.team_id
+    from public.match_room_players p
+    join public.profiles pr on pr.id = p.profile_id
+    where p.room_id = p_room_id and pr.team_id is not null
+      and ((p_winner_team = 'A' and p.slot > v_half) or (p_winner_team = 'B' and p.slot <= v_half))
+  );
+
+  update public.match_rooms
+  set status = 'completed', winner_team = p_winner_team, completed_at = now(), updated_at = now()
+  where id = p_room_id;
+end;
+$$;
+
+create or replace function public.rz_submit_room_draw(p_room_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_profile uuid;
+  v_room public.match_rooms%rowtype;
+begin
+  v_profile := rz_current_profile_id();
+
+  select * into v_room from public.match_rooms where id = p_room_id for update;
+  if not found then raise exception 'Room not found'; end if;
+  if v_room.host_id <> v_profile then raise exception 'Only host/captain can submit result'; end if;
+  if v_room.status <> 'live' then raise exception 'Match must be live'; end if;
+
+  -- Draw = 0 points, but +1 draw count.
+  update public.profiles pr
+  set draws = coalesce(draws, 0) + 1,
+      updated_at = now()
+  where pr.id in (
+    select profile_id from public.match_room_players p where p.room_id = p_room_id
+  );
+
+  update public.teams t
+  set draws = coalesce(draws, 0) + 1,
+      updated_at = now()
+  where t.id in (
+    select distinct pr.team_id
+    from public.match_room_players p
+    join public.profiles pr on pr.id = p.profile_id
+    where p.room_id = p_room_id and pr.team_id is not null
+  );
+
+  update public.match_rooms
+  set status = 'completed', winner_team = null, completed_at = now(), updated_at = now()
+  where id = p_room_id;
+end;
+$$;
+
+grant execute on function public.rz_start_room(uuid) to authenticated;
+grant execute on function public.rz_submit_room_result(uuid, text) to authenticated;
+grant execute on function public.rz_submit_room_draw(uuid) to authenticated;

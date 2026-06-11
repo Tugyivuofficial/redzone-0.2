@@ -15,8 +15,8 @@ export function PlayPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const activeRooms = useMemo(() => rooms.filter(room => room.status === 'waiting' || room.status === 'full'), [rooms]);
-  const closedRooms = useMemo(() => rooms.filter(room => room.status === 'live' || room.status === 'completed'), [rooms]);
+  const activeRooms = useMemo(() => rooms.filter(room => room.status === 'waiting' || room.status === 'full' || room.status === 'live'), [rooms]);
+  const matchHistory = useMemo(() => rooms.filter(room => room.status === 'completed'), [rooms]);
 
   useEffect(() => {
     if (!isSupabaseAvailable || !profile) return;
@@ -211,6 +211,24 @@ export function PlayPage() {
     }
   };
 
+
+  const startMatch = async (room: MatchRoom) => {
+    if (!profile || room.host_id !== profile.id) return;
+    setJoiningId(room.id);
+    setError(null);
+    setSuccess(null);
+    try {
+      const { error } = await supabase.rpc('rz_start_room', { p_room_id: room.id });
+      if (error) throw error;
+      setSuccess('Match эхэллээ. Одоо result оруулж болно.');
+      await fetchRooms();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Match эхлүүлэхэд алдаа гарлаа');
+    } finally {
+      setJoiningId(null);
+    }
+  };
+
   const submitResult = async (room: MatchRoom, winner: 'A' | 'B') => {
     if (!profile || room.host_id !== profile.id) return;
     setJoiningId(room.id);
@@ -228,6 +246,24 @@ export function PlayPage() {
     }
   };
 
+
+  const submitDraw = async (room: MatchRoom) => {
+    if (!profile || room.host_id !== profile.id) return;
+    setJoiningId(room.id);
+    setError(null);
+    setSuccess(null);
+    try {
+      const { error } = await supabase.rpc('rz_submit_room_draw', { p_room_id: room.id });
+      if (error) throw error;
+      setSuccess('Draw бүртгэгдлээ. Оноо 0, draw +1.');
+      await fetchRooms();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Draw result оруулахад алдаа гарлаа');
+    } finally {
+      setJoiningId(null);
+    }
+  };
+
   const RoomCard = ({ room }: { room: MatchRoom }) => {
     const players = room.players ?? [];
     const currentPlayer = profile ? players.find(player => player.profile_id === profile.id) : undefined;
@@ -239,6 +275,7 @@ export function PlayPage() {
     const teamA = players.filter(player => player.slot <= half);
     const teamB = players.filter(player => player.slot > half);
     const isHost = profile?.id === room.host_id;
+    const canStart = isHost && room.status === 'full' && players.length === room.max_players && readyCount === players.length;
 
     return (
       <div className="glass rounded-xl p-4 card-hover">
@@ -283,15 +320,17 @@ export function PlayPage() {
           <p className="text-xs text-rz-text-muted">{new Date(room.created_at).toLocaleString()}</p>
           {joined ? (
             <div className="flex flex-wrap items-center gap-2">
-              <button onClick={() => toggleReady(room)} disabled={joiningId === room.id || room.status === 'live'} className={`flex items-center gap-1 text-sm disabled:opacity-50 ${currentPlayer?.is_ready ? 'btn-primary' : 'btn-ghost'}`}>
+              <button onClick={() => toggleReady(room)} disabled={joiningId === room.id || room.status === 'live' || room.status === 'completed'} className={`flex items-center gap-1 text-sm disabled:opacity-50 ${currentPlayer?.is_ready ? 'btn-primary' : 'btn-ghost'}`}>
                 <CheckCircle className="w-4 h-4" /> {currentPlayer?.is_ready ? 'Ready ✓' : 'Ready'}
               </button>
-              <button onClick={() => switchTeam(room, 'A')} disabled={joiningId === room.id || room.status === 'live'} className="btn-ghost flex items-center gap-1 text-sm disabled:opacity-50"><Users className="w-4 h-4" /> Team A</button>
-              <button onClick={() => switchTeam(room, 'B')} disabled={joiningId === room.id || room.status === 'live'} className="btn-ghost flex items-center gap-1 text-sm disabled:opacity-50"><Users className="w-4 h-4" /> Team B</button>
+              <button onClick={() => switchTeam(room, 'A')} disabled={joiningId === room.id || room.status === 'live' || room.status === 'completed'} className="btn-ghost flex items-center gap-1 text-sm disabled:opacity-50"><Users className="w-4 h-4" /> Team A</button>
+              <button onClick={() => switchTeam(room, 'B')} disabled={joiningId === room.id || room.status === 'live' || room.status === 'completed'} className="btn-ghost flex items-center gap-1 text-sm disabled:opacity-50"><Users className="w-4 h-4" /> Team B</button>
               <button onClick={() => leaveRoom(room)} disabled={joiningId === room.id} className="btn-ghost text-rz-warning flex items-center gap-1 text-sm disabled:opacity-50"><LogOut className="w-4 h-4" /> Leave</button>
+              {canStart && <button onClick={() => startMatch(room)} disabled={joiningId === room.id} className="btn-primary flex items-center gap-1 text-sm disabled:opacity-50"><Swords className="w-4 h-4" /> Start Match</button>}
               {isHost && room.status === 'live' && <button onClick={() => submitResult(room, 'A')} disabled={joiningId === room.id} className="btn-primary flex items-center gap-1 text-sm disabled:opacity-50"><Trophy className="w-4 h-4" /> Team A Win</button>}
               {isHost && room.status === 'live' && <button onClick={() => submitResult(room, 'B')} disabled={joiningId === room.id} className="btn-primary flex items-center gap-1 text-sm disabled:opacity-50"><Trophy className="w-4 h-4" /> Team B Win</button>}
-              {isHost && <button onClick={() => deleteRoom(room)} disabled={joiningId === room.id} className="btn-ghost text-rz-error flex items-center gap-1 text-sm disabled:opacity-50"><Trash2 className="w-4 h-4" /> Delete</button>}
+              {isHost && room.status === 'live' && <button onClick={() => submitDraw(room)} disabled={joiningId === room.id} className="btn-ghost flex items-center gap-1 text-sm disabled:opacity-50"><Trophy className="w-4 h-4" /> Draw</button>}
+              {isHost && room.status !== 'completed' && <button onClick={() => deleteRoom(room)} disabled={joiningId === room.id} className="btn-ghost text-rz-error flex items-center gap-1 text-sm disabled:opacity-50"><Trash2 className="w-4 h-4" /> Delete</button>}
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
@@ -336,8 +375,8 @@ export function PlayPage() {
       </section>
 
       <section>
-        <h2 className="section-title flex items-center gap-2"><CheckCircle className="w-5 h-5 text-rz-success" /> Recent Live / Completed Rooms</h2>
-        {closedRooms.length === 0 ? <div className="glass rounded-xl p-6 text-center"><Clock className="w-9 h-9 text-rz-text-muted mx-auto mb-2" /><p className="text-rz-text-secondary">No recent closed rooms</p></div> : <div className="grid lg:grid-cols-2 gap-4">{closedRooms.slice(0, 6).map(room => <RoomCard key={room.id} room={room} />)}</div>}
+        <h2 className="section-title flex items-center gap-2"><CheckCircle className="w-5 h-5 text-rz-success" /> Match History</h2>
+        {matchHistory.length === 0 ? <div className="glass rounded-xl p-6 text-center"><Clock className="w-9 h-9 text-rz-text-muted mx-auto mb-2" /><p className="text-rz-text-secondary">No match history yet</p></div> : <div className="grid lg:grid-cols-2 gap-4">{matchHistory.slice(0, 10).map(room => <RoomCard key={room.id} room={room} />)}</div>}
       </section>
     </div>
   );
