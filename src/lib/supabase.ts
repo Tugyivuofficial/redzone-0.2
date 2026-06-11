@@ -109,3 +109,14 @@ export type Report = {
   resolved_at: string | null;
   reporter?: Profile;
 };
+
+export type RoomMessage = {
+  id: string;
+  room_id: string;
+  profile_id: string;
+  username: string;
+  channel: 'all' | 'team';
+  team: 'A' | 'B' | null;
+  message: string;
+  created_at: string;
+};

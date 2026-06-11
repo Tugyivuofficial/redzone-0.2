@@ -640,3 +640,120 @@ $$;
 grant execute on function public.rz_start_room(uuid) to authenticated;
 grant execute on function public.rz_submit_room_result(uuid, text) to authenticated;
 grant execute on function public.rz_submit_room_draw(uuid) to authenticated;
+
+-- Room chat: All chat + Team chat
+create table if not exists public.room_messages (
+  id uuid primary key default gen_random_uuid(),
+  room_id uuid not null references public.match_rooms(id) on delete cascade,
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  username text not null,
+  channel text not null default 'all' check (channel in ('all', 'team')),
+  team text check (team in ('A', 'B')),
+  message text not null check (char_length(message) between 1 and 300),
+  created_at timestamptz not null default now()
+);
+
+alter table public.room_messages enable row level security;
+
+drop policy if exists "Room messages selectable by room members" on public.room_messages;
+create policy "Room messages selectable by room members"
+on public.room_messages
+for select
+to authenticated
+using (
+  exists (
+    select 1 from public.match_room_players mrp
+    where mrp.room_id = room_messages.room_id
+      and mrp.profile_id = auth.uid()
+  )
+  and (
+    channel = 'all'
+    or team = (
+      select case
+        when mrp2.slot <= (mr.max_players / 2) then 'A'
+        else 'B'
+      end
+      from public.match_room_players mrp2
+      join public.match_rooms mr on mr.id = mrp2.room_id
+      where mrp2.room_id = room_messages.room_id
+        and mrp2.profile_id = auth.uid()
+      limit 1
+    )
+  )
+);
+
+drop policy if exists "Room messages insert by room members" on public.room_messages;
+create policy "Room messages insert by room members"
+on public.room_messages
+for insert
+to authenticated
+with check (
+  profile_id = auth.uid()
+  and exists (
+    select 1 from public.match_room_players mrp
+    where mrp.room_id = room_messages.room_id
+      and mrp.profile_id = auth.uid()
+  )
+);
+
+create or replace function public.rz_send_room_message(
+  p_room_id uuid,
+  p_message text,
+  p_channel text default 'all'
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_profile profiles%rowtype;
+  v_room match_rooms%rowtype;
+  v_player match_room_players%rowtype;
+  v_half int;
+  v_team text;
+  v_message text;
+begin
+  v_message := trim(coalesce(p_message, ''));
+  if char_length(v_message) < 1 or char_length(v_message) > 300 then
+    raise exception 'Message 1-300 тэмдэгт байх ёстой';
+  end if;
+
+  if p_channel not in ('all', 'team') then
+    raise exception 'Invalid chat channel';
+  end if;
+
+  select * into v_profile from profiles where id = auth.uid();
+  if not found then
+    raise exception 'Profile олдсонгүй';
+  end if;
+
+  select * into v_room from match_rooms where id = p_room_id;
+  if not found then
+    raise exception 'Room олдсонгүй';
+  end if;
+
+  select * into v_player
+  from match_room_players
+  where room_id = p_room_id and profile_id = auth.uid();
+
+  if not found then
+    raise exception 'Chat бичихийн тулд эхлээд room-д орно уу';
+  end if;
+
+  v_half := v_room.max_players / 2;
+  v_team := case when v_player.slot <= v_half then 'A' else 'B' end;
+
+  insert into room_messages(room_id, profile_id, username, channel, team, message)
+  values (
+    p_room_id,
+    auth.uid(),
+    v_profile.username,
+    p_channel,
+    case when p_channel = 'team' then v_team else null end,
+    v_message
+  );
+end;
+$$;
+
+grant execute on function public.rz_send_room_message(uuid, text, text) to authenticated;

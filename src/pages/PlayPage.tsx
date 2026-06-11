@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle, Clock, Gamepad2, LogOut, Plus, RefreshCw, Swords, Trash2, Trophy, Users } from 'lucide-react';
-import { supabase, isSupabaseAvailable, type MatchRoom, type MatchRoomPlayer, type Profile } from '../lib/supabase';
+import { AlertTriangle, CheckCircle, Clock, Gamepad2, LogOut, MessageCircle, Plus, RefreshCw, Send, Swords, Trash2, Trophy, Users } from 'lucide-react';
+import { supabase, isSupabaseAvailable, type MatchRoom, type MatchRoomPlayer, type Profile, type RoomMessage } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 
 type RoomMode = '2v2' | '5v5';
@@ -15,6 +15,10 @@ export function PlayPage() {
   const [joiningId, setJoiningId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [messagesByRoom, setMessagesByRoom] = useState<Record<string, RoomMessage[]>>({});
+  const [chatTabByRoom, setChatTabByRoom] = useState<Record<string, 'all' | 'team'>>({});
+  const [messageTextByRoom, setMessageTextByRoom] = useState<Record<string, string>>({});
+  const [sendingMessageRoom, setSendingMessageRoom] = useState<string | null>(null);
 
   const activeRooms = useMemo(() => rooms.filter(room => room.status === 'waiting' || room.status === 'full' || room.status === 'live'), [rooms]);
   const matchHistory = useMemo(() => rooms.filter(room => room.status === 'completed'), [rooms]);
@@ -27,6 +31,7 @@ export function PlayPage() {
       .channel('match_rooms_live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'match_rooms' }, fetchRooms)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'match_room_players' }, fetchRooms)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'room_messages' }, fetchRooms)
       .subscribe();
 
     return () => {
@@ -83,6 +88,7 @@ export function PlayPage() {
       }));
 
       setRooms(mergedRooms);
+      await fetchRoomMessages(roomIds, mergedRooms);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Rooms уншихад алдаа гарлаа');
     }
@@ -265,6 +271,82 @@ export function PlayPage() {
     }
   };
 
+
+  const getPlayerTeam = (room: MatchRoom, profileId: string) => {
+    const half = halfSlots(room);
+    const player = room.players?.find(item => item.profile_id === profileId);
+    if (!player) return null;
+    return player.slot <= half ? 'A' : 'B';
+  };
+
+  const fetchRoomMessages = async (roomIds: string[], mergedRooms: MatchRoom[]) => {
+    if (roomIds.length === 0 || !profile) {
+      setMessagesByRoom({});
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('room_messages')
+      .select('*')
+      .in('room_id', roomIds)
+      .order('created_at', { ascending: true })
+      .limit(300);
+
+    if (error) {
+      console.warn('Room messages fetch error', error.message);
+      return;
+    }
+
+    const next: Record<string, RoomMessage[]> = {};
+    for (const room of mergedRooms) {
+      const myTeam = getPlayerTeam(room, profile.id);
+      next[room.id] = ((data ?? []) as RoomMessage[]).filter(message => {
+        if (message.room_id !== room.id) return false;
+        if (message.channel === 'all') return true;
+        return !!myTeam && message.team === myTeam;
+      }).slice(-80);
+    }
+    setMessagesByRoom(next);
+  };
+
+  const sendRoomMessage = async (room: MatchRoom) => {
+    if (!profile) {
+      setError('Эхлээд login хийнэ үү');
+      return;
+    }
+
+    const text = (messageTextByRoom[room.id] ?? '').trim();
+    if (!text) return;
+    if (text.length > 300) {
+      setError('Chat message 300 тэмдэгтээс бага байх ёстой');
+      return;
+    }
+
+    const channel = chatTabByRoom[room.id] ?? 'all';
+    const myTeam = getPlayerTeam(room, profile.id);
+    if (channel === 'team' && !myTeam) {
+      setError('Team chat бичихийн тулд эхлээд Team A/B-д орно уу');
+      return;
+    }
+
+    setSendingMessageRoom(room.id);
+    setError(null);
+    try {
+      const { error } = await supabase.rpc('rz_send_room_message', {
+        p_room_id: room.id,
+        p_message: text,
+        p_channel: channel,
+      });
+      if (error) throw error;
+      setMessageTextByRoom(prev => ({ ...prev, [room.id]: '' }));
+      await fetchRooms();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Message илгээхэд алдаа гарлаа');
+    } finally {
+      setSendingMessageRoom(null);
+    }
+  };
+
   const RoomCard = ({ room }: { room: MatchRoom }) => {
     const players = room.players ?? [];
     const currentPlayer = profile ? players.find(player => player.profile_id === profile.id) : undefined;
@@ -320,6 +402,67 @@ export function PlayPage() {
             </div>
           </div>
         </div>
+
+        {joined && (
+          <div className="bg-rz-card/40 border border-rz-border rounded-lg p-3 mb-4">
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2 text-sm font-semibold"><MessageCircle className="w-4 h-4 text-rz-accent" /> Room Chat</div>
+              <div className="flex items-center gap-1 bg-rz-dark/60 rounded-lg p-1">
+                <button
+                  onClick={() => setChatTabByRoom(prev => ({ ...prev, [room.id]: 'all' }))}
+                  className={`px-2.5 py-1 rounded text-xs ${(chatTabByRoom[room.id] ?? 'all') === 'all' ? 'bg-rz-accent text-white' : 'text-rz-text-secondary hover:text-rz-text'}`}
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => setChatTabByRoom(prev => ({ ...prev, [room.id]: 'team' }))}
+                  className={`px-2.5 py-1 rounded text-xs ${chatTabByRoom[room.id] === 'team' ? 'bg-rz-accent text-white' : 'text-rz-text-secondary hover:text-rz-text'}`}
+                >
+                  Team
+                </button>
+              </div>
+            </div>
+
+            <div className="h-36 overflow-y-auto bg-rz-dark/50 border border-rz-border rounded-lg p-2 space-y-2 mb-2">
+              {(messagesByRoom[room.id] ?? []).filter(message => {
+                const tab = chatTabByRoom[room.id] ?? 'all';
+                if (tab === 'all') return message.channel === 'all';
+                return message.channel === 'team';
+              }).length === 0 ? (
+                <p className="text-xs text-rz-text-muted text-center py-10">No messages yet</p>
+              ) : (
+                (messagesByRoom[room.id] ?? []).filter(message => {
+                  const tab = chatTabByRoom[room.id] ?? 'all';
+                  if (tab === 'all') return message.channel === 'all';
+                  return message.channel === 'team';
+                }).map(message => (
+                  <div key={message.id} className="text-sm">
+                    <span className="text-rz-accent font-medium">{message.username}</span>
+                    <span className="text-rz-text-muted text-xs ml-1">{message.channel === 'team' ? `Team ${message.team}` : 'All'}</span>
+                    <p className="text-rz-text-secondary break-words">{message.message}</p>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                value={messageTextByRoom[room.id] ?? ''}
+                onChange={event => setMessageTextByRoom(prev => ({ ...prev, [room.id]: event.target.value }))}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    sendRoomMessage(room);
+                  }
+                }}
+                maxLength={300}
+                placeholder={(chatTabByRoom[room.id] ?? 'all') === 'all' ? 'All chat message...' : 'Team chat message...'}
+                className="input-field flex-1 text-sm"
+              />
+              <button onClick={() => sendRoomMessage(room)} disabled={sendingMessageRoom === room.id} className="btn-primary px-3 disabled:opacity-50"><Send className="w-4 h-4" /></button>
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <p className="text-xs text-rz-text-muted">{new Date(room.created_at).toLocaleString()}</p>
