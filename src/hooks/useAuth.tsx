@@ -15,6 +15,16 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+function withTimeout<T>(promise: Promise<T>, ms = 10000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error('Request timed out. Please try again.')), ms);
+    promise.then(
+      (value) => { window.clearTimeout(timer); resolve(value); },
+      (error) => { window.clearTimeout(timer); reject(error); }
+    );
+  });
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -26,26 +36,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { mountedRef.current = false; };
   }, []);
 
-  const fetchProfile = useCallback(async (userId: string) => {
+  const ensureProfile = useCallback(async (userId: string, email?: string | null, username?: string | null) => {
+    if (!isSupabaseAvailable) return null;
+
+    const { data: existing, error: selectError } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (existing) return existing as Profile;
+
+    if (selectError && selectError.code !== 'PGRST116') {
+      throw selectError;
+    }
+
+    const fallbackUsername =
+      username?.trim() ||
+      email?.split('@')[0]?.replace(/[^a-zA-Z0-9_]/g, '_') ||
+      `player_${userId.slice(0, 6)}`;
+
+    const { data: created, error: insertError } = await supabase
+      .from('profiles')
+      .insert({
+        id: userId,
+        username: fallbackUsername,
+        role: 'captain',
+      })
+      .select('*')
+      .single();
+
+    if (insertError) throw insertError;
+    return created as Profile;
+  }, []);
+
+  const fetchProfile = useCallback(async (userId: string, email?: string | null, username?: string | null) => {
     if (!isSupabaseAvailable) {
-      setProfile(null);
+      if (mountedRef.current) setProfile(null);
       return;
     }
+
     try {
-      const res = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
-      if (mountedRef.current) {
-        setProfile(res.data);
-      }
-    } catch {
-      if (mountedRef.current) {
-        setProfile(null);
-      }
+      const nextProfile = await withTimeout(ensureProfile(userId, email, username), 10000);
+      if (mountedRef.current) setProfile(nextProfile);
+    } catch (error) {
+      console.error('Profile load failed:', error);
+      if (mountedRef.current) setProfile(null);
     }
-  }, []);
+  }, [ensureProfile]);
 
   useEffect(() => {
     if (!isSupabaseAvailable) {
@@ -53,60 +91,97 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    let initialSessionResolved = false;
+    let cancelled = false;
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, newSession) => {
-        if (!mountedRef.current) return;
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled || !mountedRef.current) return;
+      const currentSession = data.session;
+      setSession(currentSession);
+      setLoading(false);
 
-        setSession(newSession);
-        if (newSession?.user) {
-          await fetchProfile(newSession.user.id);
-        } else {
-          setProfile(null);
-        }
-
-        if (event === 'INITIAL_SESSION' || !initialSessionResolved) {
-          initialSessionResolved = true;
-          if (mountedRef.current) setLoading(false);
-        }
+      if (currentSession?.user) {
+        window.setTimeout(() => {
+          fetchProfile(
+            currentSession.user.id,
+            currentSession.user.email,
+            currentSession.user.user_metadata?.username || currentSession.user.user_metadata?.name
+          );
+        }, 0);
+      } else {
+        setProfile(null);
       }
-    );
+    }).catch((error) => {
+      console.error('Initial session failed:', error);
+      if (!cancelled && mountedRef.current) setLoading(false);
+    });
 
-    const timeout = setTimeout(() => {
-      if (!initialSessionResolved && mountedRef.current) {
-        initialSessionResolved = true;
-        setLoading(false);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (!mountedRef.current) return;
+      setSession(newSession);
+      setLoading(false);
+
+      if (newSession?.user) {
+        window.setTimeout(() => {
+          fetchProfile(
+            newSession.user.id,
+            newSession.user.email,
+            newSession.user.user_metadata?.username || newSession.user.user_metadata?.name
+          );
+        }, 0);
+      } else {
+        setProfile(null);
       }
-    }, 5000);
+    });
 
     return () => {
+      cancelled = true;
       subscription.unsubscribe();
-      clearTimeout(timeout);
     };
   }, [fetchProfile]);
 
   const signIn = async (email: string, password: string) => {
     if (!isSupabaseAvailable) return { error: 'Service unavailable' };
+
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      return { error: error?.message ?? null };
-    } catch {
-      return { error: 'Network error' };
+      const { data, error } = await withTimeout(
+        supabase.auth.signInWithPassword({ email, password }),
+        10000
+      );
+
+      if (error) return { error: error.message };
+
+      if (data.user) {
+        await fetchProfile(data.user.id, data.user.email, data.user.user_metadata?.username || data.user.user_metadata?.name);
+      }
+
+      return { error: null };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Network error' };
     }
   };
 
   const signUp = async (email: string, password: string, username: string) => {
     if (!isSupabaseAvailable) return { error: 'Service unavailable' };
+
     try {
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: { data: { username } },
-      });
-      return { error: error?.message ?? null };
-    } catch {
-      return { error: 'Network error' };
+      const { data, error } = await withTimeout(
+        supabase.auth.signUp({
+          email,
+          password,
+          options: { data: { username } },
+        }),
+        10000
+      );
+
+      if (error) return { error: error.message };
+
+      if (data.user) {
+        await fetchProfile(data.user.id, data.user.email, username);
+      }
+
+      return { error: null };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Network error' };
     }
   };
 
@@ -115,23 +190,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: {
-          redirectTo: window.location.origin,
-        },
+        options: { redirectTo: window.location.origin },
       });
-    } catch { /* ignore */ }
+    } catch (error) {
+      console.error('Google login failed:', error);
+    }
   };
 
   const signOut = async () => {
     if (!isSupabaseAvailable) return;
     try {
       await supabase.auth.signOut();
-    } catch { /* ignore */ }
+    } catch (error) {
+      console.error('Sign out failed:', error);
+    }
+    setSession(null);
     setProfile(null);
   };
 
   const refreshProfile = async () => {
-    if (session?.user) await fetchProfile(session.user.id);
+    if (session?.user) {
+      await fetchProfile(session.user.id, session.user.email, session.user.user_metadata?.username || session.user.user_metadata?.name);
+    }
   };
 
   return (
