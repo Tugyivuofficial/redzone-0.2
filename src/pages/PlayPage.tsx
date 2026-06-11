@@ -8,7 +8,7 @@ type RoomMode = '2v2' | '5v5';
 const getMaxPlayers = (mode: RoomMode) => (mode === '2v2' ? 4 : 10);
 
 export function PlayPage() {
-  const { user, profile } = useAuth();
+  const { session, profile } = useAuth();
   const [rooms, setRooms] = useState<MatchRoom[]>([]);
   const [loading, setLoading] = useState(false);
   const [joiningId, setJoiningId] = useState<string | null>(null);
@@ -17,6 +17,12 @@ export function PlayPage() {
 
   const waitingRooms = useMemo(() => rooms.filter(room => room.status === 'waiting'), [rooms]);
   const closedRooms = useMemo(() => rooms.filter(room => room.status !== 'waiting'), [rooms]);
+
+  useEffect(() => {
+    if (profile && error === 'Эхлээд login хийнэ үү') {
+      setError(null);
+    }
+  }, [profile, error]);
 
   useEffect(() => {
     if (!isSupabaseAvailable || !profile) return;
@@ -50,7 +56,7 @@ export function PlayPage() {
   };
 
   const createRoom = async (mode: RoomMode) => {
-    if (!user || !profile) {
+    if (!session?.user || !profile) {
       setError('Эхлээд login хийнэ үү');
       return;
     }
