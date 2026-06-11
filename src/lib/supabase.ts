@@ -77,6 +77,7 @@ export type MatchRoomPlayer = {
   room_id: string;
   profile_id: string;
   slot: number;
+  is_ready: boolean;
   joined_at: string;
   profile?: Profile;
 };

@@ -16,6 +16,7 @@ create table if not exists match_room_players (
   room_id uuid not null references match_rooms(id) on delete cascade,
   profile_id uuid not null references profiles(id) on delete cascade,
   slot int not null,
+  is_ready boolean not null default false,
   joined_at timestamptz not null default now(),
   unique(room_id, profile_id),
   unique(room_id, slot)
@@ -59,3 +60,41 @@ for delete to authenticated using (
 create index if not exists idx_match_rooms_status on match_rooms(status);
 create index if not exists idx_match_room_players_room on match_room_players(room_id);
 create index if not exists idx_match_room_players_profile on match_room_players(profile_id);
+
+
+-- Allow players to switch between Team A and Team B by changing their slot.
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and tablename = 'match_room_players'
+      and policyname = 'match_room_players_update_own_team'
+  ) then
+    create policy "match_room_players_update_own_team" on match_room_players
+    for update to authenticated
+    using (auth.uid() = profile_id)
+    with check (auth.uid() = profile_id);
+  end if;
+end $$;
+
+
+-- Ready system: existing projects may already have match_room_players without this column.
+alter table match_room_players
+add column if not exists is_ready boolean not null default false;
+
+-- Make sure own player row can be updated for Ready toggle and team switch.
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and tablename = 'match_room_players'
+      and policyname = 'match_room_players_update_own_ready'
+  ) then
+    create policy "match_room_players_update_own_ready" on match_room_players
+    for update to authenticated
+    using (auth.uid() = profile_id)
+    with check (auth.uid() = profile_id);
+  end if;
+end $$;

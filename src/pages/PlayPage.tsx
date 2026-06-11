@@ -15,8 +15,8 @@ export function PlayPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const waitingRooms = useMemo(() => rooms.filter(room => room.status === 'waiting'), [rooms]);
-  const closedRooms = useMemo(() => rooms.filter(room => room.status !== 'waiting'), [rooms]);
+  const activeRooms = useMemo(() => rooms.filter(room => room.status === 'waiting' || room.status === 'full'), [rooms]);
+  const closedRooms = useMemo(() => rooms.filter(room => room.status !== 'waiting' && room.status !== 'full'), [rooms]);
 
   useEffect(() => {
     if (profile && error === 'Эхлээд login хийнэ үү') {
@@ -83,6 +83,7 @@ export function PlayPage() {
         room_id: room.id,
         profile_id: profile.id,
         slot: 1,
+        is_ready: false,
       });
 
       if (playerError) throw playerError;
@@ -96,7 +97,7 @@ export function PlayPage() {
     }
   };
 
-  const joinRoom = async (room: MatchRoom) => {
+  const joinRoom = async (room: MatchRoom, team: 'A' | 'B') => {
     if (!profile) {
       setError('Эхлээд login хийнэ үү');
       return;
@@ -114,19 +115,28 @@ export function PlayPage() {
       return;
     }
 
+    const half = room.max_players / 2;
+    const teamStart = team === 'A' ? 1 : half + 1;
+    const teamEnd = team === 'A' ? half : room.max_players;
+    const usedSlots = new Set(players.map(player => player.slot));
+    let slot = teamStart;
+    while (slot <= teamEnd && usedSlots.has(slot)) slot += 1;
+
+    if (slot > teamEnd) {
+      setError(`Team ${team} дүүрсэн байна`);
+      return;
+    }
+
     setJoiningId(room.id);
     setError(null);
     setSuccess(null);
 
     try {
-      const usedSlots = new Set(players.map(player => player.slot));
-      let slot = 1;
-      while (usedSlots.has(slot)) slot += 1;
-
       const { error } = await supabase.from('match_room_players').insert({
         room_id: room.id,
         profile_id: profile.id,
         slot,
+        is_ready: false,
       });
 
       if (error) throw error;
@@ -136,10 +146,106 @@ export function PlayPage() {
         await supabase.from('match_rooms').update({ status: 'full' }).eq('id', room.id);
       }
 
-      setSuccess('Room-д амжилттай орлоо');
+      setSuccess(`Team ${team}-д амжилттай орлоо`);
       await fetchRooms();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Room-д ороход алдаа гарлаа');
+    } finally {
+      setJoiningId(null);
+    }
+  };
+
+  const switchTeam = async (room: MatchRoom, team: 'A' | 'B') => {
+    if (!profile) return;
+
+    const players = room.players ?? [];
+    const currentPlayer = players.find(player => player.profile_id === profile.id);
+    if (!currentPlayer) {
+      await joinRoom(room, team);
+      return;
+    }
+
+    const half = room.max_players / 2;
+    const isAlreadyInTeam = team === 'A' ? currentPlayer.slot <= half : currentPlayer.slot > half;
+    if (isAlreadyInTeam) {
+      setError(`Чи аль хэдийн Team ${team}-д байна`);
+      return;
+    }
+
+    const teamStart = team === 'A' ? 1 : half + 1;
+    const teamEnd = team === 'A' ? half : room.max_players;
+    const usedSlots = new Set(players.filter(player => player.profile_id !== profile.id).map(player => player.slot));
+    let slot = teamStart;
+    while (slot <= teamEnd && usedSlots.has(slot)) slot += 1;
+
+    if (slot > teamEnd) {
+      setError(`Team ${team} дүүрсэн байна`);
+      return;
+    }
+
+    setJoiningId(room.id);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const { error } = await supabase
+        .from('match_room_players')
+        .update({ slot, is_ready: false })
+        .eq('room_id', room.id)
+        .eq('profile_id', profile.id);
+
+      if (error) throw error;
+
+      setSuccess(`Team ${team} рүү шилжлээ`);
+      await fetchRooms();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Team солиход алдаа гарлаа');
+    } finally {
+      setJoiningId(null);
+    }
+  };
+
+  const toggleReady = async (room: MatchRoom) => {
+    if (!profile) return;
+
+    const players = room.players ?? [];
+    const currentPlayer = players.find(player => player.profile_id === profile.id);
+    if (!currentPlayer) {
+      setError('Эхлээд room-д орно уу');
+      return;
+    }
+
+    setJoiningId(room.id);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const nextReady = !currentPlayer.is_ready;
+      const { error } = await supabase
+        .from('match_room_players')
+        .update({ is_ready: nextReady })
+        .eq('room_id', room.id)
+        .eq('profile_id', profile.id);
+
+      if (error) throw error;
+
+      const updatedPlayers = players.map(player =>
+        player.profile_id === profile.id ? { ...player, is_ready: nextReady } : player
+      );
+
+      const roomIsFull = updatedPlayers.length >= room.max_players;
+      const everyoneReady = roomIsFull && updatedPlayers.every(player => player.is_ready);
+
+      if (everyoneReady) {
+        await supabase.from('match_rooms').update({ status: 'live' }).eq('id', room.id);
+        setSuccess('Бүх тоглогч Ready боллоо. Match эхэллээ!');
+      } else {
+        setSuccess(nextReady ? 'Ready боллоо' : 'Ready цуцаллаа');
+      }
+
+      await fetchRooms();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ready төлөв өөрчлөхөд алдаа гарлаа');
     } finally {
       setJoiningId(null);
     }
@@ -177,7 +283,9 @@ export function PlayPage() {
 
   const RoomCard = ({ room }: { room: MatchRoom }) => {
     const players = room.players ?? [];
-    const joined = !!profile && players.some(player => player.profile_id === profile.id);
+    const currentPlayer = profile ? players.find(player => player.profile_id === profile.id) : undefined;
+    const joined = !!currentPlayer;
+    const readyCount = players.filter(player => player.is_ready).length;
     const isFull = players.length >= room.max_players;
     const canJoin = room.status === 'waiting' && !joined && !isFull;
     const teamA = players.filter(player => player.slot <= room.max_players / 2);
@@ -192,7 +300,7 @@ export function PlayPage() {
                 <span className="w-1.5 h-1.5 rounded-full bg-rz-accent animate-pulse" />
                 {room.mode}
               </span>
-              <span className={room.status === 'waiting' ? 'badge-info' : room.status === 'full' ? 'badge-success' : 'badge-error'}>
+              <span className={room.status === 'waiting' ? 'badge-info' : room.status === 'full' || room.status === 'live' ? 'badge-success' : 'badge-error'}>
                 {room.status.toUpperCase()}
               </span>
             </div>
@@ -203,6 +311,7 @@ export function PlayPage() {
           <div className="text-right">
             <p className="text-lg font-bold text-rz-accent">{players.length}/{room.max_players}</p>
             <p className="text-xs text-rz-text-muted">players</p>
+            <p className="text-xs text-rz-success">Ready {readyCount}/{players.length}</p>
           </div>
         </div>
 
@@ -212,7 +321,7 @@ export function PlayPage() {
             <div className="space-y-1.5">
               {Array.from({ length: room.max_players / 2 }).map((_, index) => {
                 const player = teamA[index];
-                return <p key={index} className="text-sm truncate">{player?.profile?.username ?? `Empty slot ${index + 1}`}</p>;
+                return <p key={index} className="text-sm truncate">{player?.profile?.username ?? `Empty slot ${index + 1}`} {player?.is_ready ? '✅' : player ? '⏳' : ''}</p>;
               })}
             </div>
           </div>
@@ -221,22 +330,38 @@ export function PlayPage() {
             <div className="space-y-1.5">
               {Array.from({ length: room.max_players / 2 }).map((_, index) => {
                 const player = teamB[index];
-                return <p key={index} className="text-sm truncate">{player?.profile?.username ?? `Empty slot ${index + 1}`}</p>;
+                return <p key={index} className="text-sm truncate">{player?.profile?.username ?? `Empty slot ${index + 1}`} {player?.is_ready ? '✅' : player ? '⏳' : ''}</p>;
               })}
             </div>
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <p className="text-xs text-rz-text-muted">{new Date(room.created_at).toLocaleString()}</p>
           {joined ? (
-            <button onClick={() => leaveRoom(room)} disabled={joiningId === room.id} className="btn-ghost text-rz-warning flex items-center gap-1 text-sm disabled:opacity-50">
-              <LogOut className="w-4 h-4" /> Leave
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={() => toggleReady(room)} disabled={joiningId === room.id || room.status === 'live'} className={`flex items-center gap-1 text-sm disabled:opacity-50 ${currentPlayer?.is_ready ? 'btn-primary' : 'btn-ghost'}`}>
+                <CheckCircle className="w-4 h-4" /> {currentPlayer?.is_ready ? 'Ready ✓' : 'Ready'}
+              </button>
+              <button onClick={() => switchTeam(room, 'A')} disabled={joiningId === room.id || room.status === 'live'} className="btn-ghost flex items-center gap-1 text-sm disabled:opacity-50">
+                <Users className="w-4 h-4" /> Team A
+              </button>
+              <button onClick={() => switchTeam(room, 'B')} disabled={joiningId === room.id} className="btn-ghost flex items-center gap-1 text-sm disabled:opacity-50">
+                <Users className="w-4 h-4" /> Team B
+              </button>
+              <button onClick={() => leaveRoom(room)} disabled={joiningId === room.id} className="btn-ghost text-rz-warning flex items-center gap-1 text-sm disabled:opacity-50">
+                <LogOut className="w-4 h-4" /> Leave
+              </button>
+            </div>
           ) : (
-            <button onClick={() => joinRoom(room)} disabled={!canJoin || joiningId === room.id} className="btn-primary flex items-center gap-1 text-sm disabled:opacity-50">
-              <Users className="w-4 h-4" /> {joiningId === room.id ? 'Joining...' : isFull ? 'Full' : 'Join'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={() => joinRoom(room, 'A')} disabled={!canJoin || joiningId === room.id} className="btn-primary flex items-center gap-1 text-sm disabled:opacity-50">
+                <Users className="w-4 h-4" /> {joiningId === room.id ? 'Joining...' : isFull ? 'Full' : 'Join Team A'}
+              </button>
+              <button onClick={() => joinRoom(room, 'B')} disabled={!canJoin || joiningId === room.id} className="btn-primary flex items-center gap-1 text-sm disabled:opacity-50">
+                <Users className="w-4 h-4" /> {joiningId === room.id ? 'Joining...' : isFull ? 'Full' : 'Join Team B'}
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -287,20 +412,20 @@ export function PlayPage() {
         <h2 className="section-title flex items-center gap-2">
           <Swords className="w-5 h-5 text-rz-accent" /> Active Rooms
         </h2>
-        {waitingRooms.length === 0 ? (
+        {activeRooms.length === 0 ? (
           <div className="glass rounded-xl p-8 text-center">
             <Gamepad2 className="w-10 h-10 text-rz-text-muted mx-auto mb-3" />
             <p className="text-rz-text-secondary">No active rooms</p>
             <p className="text-sm text-rz-text-muted mt-1">Create a 2v2 or 5v5 room to get started.</p>
           </div>
         ) : (
-          <div className="grid lg:grid-cols-2 gap-4">{waitingRooms.map(room => <RoomCard key={room.id} room={room} />)}</div>
+          <div className="grid lg:grid-cols-2 gap-4">{activeRooms.map(room => <RoomCard key={room.id} room={room} />)}</div>
         )}
       </section>
 
       <section>
         <h2 className="section-title flex items-center gap-2">
-          <CheckCircle className="w-5 h-5 text-rz-success" /> Recent Full / Cancelled Rooms
+          <CheckCircle className="w-5 h-5 text-rz-success" /> Recent Live / Cancelled Rooms
         </h2>
         {closedRooms.length === 0 ? (
           <div className="glass rounded-xl p-6 text-center">
