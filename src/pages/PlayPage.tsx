@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle, Clock, Gamepad2, LogOut, MessageCircle, Plus, RefreshCw, Send, Swords, Trash2, Trophy, Users } from 'lucide-react';
 import { supabase, isSupabaseAvailable, type MatchRoom, type MatchRoomPlayer, type Profile, type RoomMessage } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
@@ -17,7 +17,7 @@ export function PlayPage() {
   const [success, setSuccess] = useState<string | null>(null);
   const [messagesByRoom, setMessagesByRoom] = useState<Record<string, RoomMessage[]>>({});
   const [chatTabByRoom, setChatTabByRoom] = useState<Record<string, 'all' | 'team'>>({});
-  const [messageTextByRoom, setMessageTextByRoom] = useState<Record<string, string>>({});
+  const messageInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [sendingMessageRoom, setSendingMessageRoom] = useState<string | null>(null);
 
   const activeRooms = useMemo(() => rooms.filter(room => room.status === 'waiting' || room.status === 'full' || room.status === 'live'), [rooms]);
@@ -315,7 +315,8 @@ export function PlayPage() {
       return;
     }
 
-    const text = (messageTextByRoom[room.id] ?? '').trim();
+    const input = messageInputRefs.current[room.id];
+    const text = (input?.value ?? '').trim();
     if (!text) return;
     if (text.length > 300) {
       setError('Chat message 300 тэмдэгтээс бага байх ёстой');
@@ -338,7 +339,7 @@ export function PlayPage() {
         p_channel: channel,
       });
       if (error) throw error;
-      setMessageTextByRoom(prev => ({ ...prev, [room.id]: '' }));
+      if (input) input.value = '';
       await fetchRooms();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Message илгээхэд алдаа гарлаа');
@@ -447,8 +448,7 @@ export function PlayPage() {
 
             <div className="flex items-center gap-2">
               <input
-                value={messageTextByRoom[room.id] ?? ''}
-                onChange={event => setMessageTextByRoom(prev => ({ ...prev, [room.id]: event.target.value }))}
+                ref={element => { messageInputRefs.current[room.id] = element; }}
                 onKeyDown={event => {
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
