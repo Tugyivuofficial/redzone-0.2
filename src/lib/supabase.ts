@@ -20,6 +20,7 @@ export type Profile = {
   wins: number;
   losses: number;
   draws: number;
+  points: number;
   created_at: string;
   updated_at: string;
 };
@@ -34,6 +35,7 @@ export type Team = {
   wins: number;
   losses: number;
   draws: number;
+  points: number;
   created_at: string;
   updated_at: string;
   members?: Profile[];
@@ -90,6 +92,8 @@ export type MatchRoom = {
   max_players: number;
   created_at: string;
   updated_at: string;
+  winner_team?: 'A' | 'B' | null;
+  completed_at?: string | null;
   host?: Profile;
   players?: MatchRoomPlayer[];
 };

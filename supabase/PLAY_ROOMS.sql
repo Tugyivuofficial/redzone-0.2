@@ -29,6 +29,11 @@ alter table match_room_players add column if not exists joined_at timestamptz no
 alter table match_rooms add column if not exists max_players int not null default 4;
 alter table match_rooms add column if not exists updated_at timestamptz not null default now();
 
+alter table profiles add column if not exists points int not null default 0;
+alter table teams add column if not exists points int not null default 0;
+alter table match_rooms add column if not exists winner_team text check (winner_team in ('A', 'B'));
+alter table match_rooms add column if not exists completed_at timestamptz;
+
 -- Fill missing values if old rows exist
 update match_room_players set is_ready = false where is_ready is null;
 update match_room_players set slot = 1 where slot is null;
@@ -336,6 +341,84 @@ begin
   delete from public.match_rooms where id = p_room_id and host_id = v_profile;
 end;
 $$;
+
+
+
+create or replace function rz_submit_room_result(p_room_id uuid, p_winner_team text)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_profile uuid;
+  v_room public.match_rooms%rowtype;
+  v_half int;
+begin
+  v_profile := rz_current_profile_id();
+
+  select * into v_room from public.match_rooms where id = p_room_id for update;
+  if not found then raise exception 'Room not found'; end if;
+  if v_room.host_id <> v_profile then raise exception 'Only host can submit result'; end if;
+  if v_room.status not in ('live', 'full') then raise exception 'Room must be live or full'; end if;
+  if p_winner_team not in ('A', 'B') then raise exception 'Invalid winner team'; end if;
+
+  v_half := v_room.max_players / 2;
+
+  -- Winner players: +10 points and +1 win.
+  update public.profiles pr
+  set points = coalesce(points, 0) + 10,
+      wins = coalesce(wins, 0) + 1,
+      updated_at = now()
+  where pr.id in (
+    select profile_id from public.match_room_players p
+    where p.room_id = p_room_id
+      and ((p_winner_team = 'A' and p.slot <= v_half) or (p_winner_team = 'B' and p.slot > v_half))
+  );
+
+  -- Loser players: -10 points and +1 loss.
+  update public.profiles pr
+  set points = coalesce(points, 0) - 10,
+      losses = coalesce(losses, 0) + 1,
+      updated_at = now()
+  where pr.id in (
+    select profile_id from public.match_room_players p
+    where p.room_id = p_room_id
+      and ((p_winner_team = 'A' and p.slot > v_half) or (p_winner_team = 'B' and p.slot <= v_half))
+  );
+
+  -- Team leaderboard: update real teams of players if profile.team_id is set.
+  update public.teams t
+  set points = coalesce(points, 0) + 10,
+      wins = coalesce(wins, 0) + 1,
+      updated_at = now()
+  where t.id in (
+    select distinct pr.team_id
+    from public.match_room_players p
+    join public.profiles pr on pr.id = p.profile_id
+    where p.room_id = p_room_id and pr.team_id is not null
+      and ((p_winner_team = 'A' and p.slot <= v_half) or (p_winner_team = 'B' and p.slot > v_half))
+  );
+
+  update public.teams t
+  set points = coalesce(points, 0) - 10,
+      losses = coalesce(losses, 0) + 1,
+      updated_at = now()
+  where t.id in (
+    select distinct pr.team_id
+    from public.match_room_players p
+    join public.profiles pr on pr.id = p.profile_id
+    where p.room_id = p_room_id and pr.team_id is not null
+      and ((p_winner_team = 'A' and p.slot > v_half) or (p_winner_team = 'B' and p.slot <= v_half))
+  );
+
+  update public.match_rooms
+  set status = 'completed', winner_team = p_winner_team, completed_at = now(), updated_at = now()
+  where id = p_room_id;
+end;
+$$;
+
+grant execute on function rz_submit_room_result(uuid, text) to authenticated;
 
 grant execute on function rz_current_profile_id() to authenticated;
 grant execute on function rz_create_room(text) to authenticated;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle, Clock, Gamepad2, LogOut, Plus, RefreshCw, Swords, Trash2, Users } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Clock, Gamepad2, LogOut, Plus, RefreshCw, Swords, Trash2, Trophy, Users } from 'lucide-react';
 import { supabase, isSupabaseAvailable, type MatchRoom, type MatchRoomPlayer, type Profile } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 
@@ -211,6 +211,23 @@ export function PlayPage() {
     }
   };
 
+  const submitResult = async (room: MatchRoom, winner: 'A' | 'B') => {
+    if (!profile || room.host_id !== profile.id) return;
+    setJoiningId(room.id);
+    setError(null);
+    setSuccess(null);
+    try {
+      const { error } = await supabase.rpc('rz_submit_room_result', { p_room_id: room.id, p_winner_team: winner });
+      if (error) throw error;
+      setSuccess(`Team ${winner} яллаа. Winner +10, loser -10 оноо шинэчлэгдлээ.`);
+      await fetchRooms();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Result оруулахад алдаа гарлаа');
+    } finally {
+      setJoiningId(null);
+    }
+  };
+
   const RoomCard = ({ room }: { room: MatchRoom }) => {
     const players = room.players ?? [];
     const currentPlayer = profile ? players.find(player => player.profile_id === profile.id) : undefined;
@@ -230,6 +247,7 @@ export function PlayPage() {
             <div className="flex items-center gap-2 mb-1">
               <span className="badge-live"><span className="w-1.5 h-1.5 rounded-full bg-rz-accent animate-pulse" />{room.mode}</span>
               <span className={room.status === 'waiting' ? 'badge-info' : room.status === 'full' || room.status === 'live' ? 'badge-success' : 'badge-error'}>{room.status.toUpperCase()}</span>
+              {room.winner_team && <span className="badge-success">TEAM {room.winner_team} WIN</span>}
             </div>
             <p className="text-sm text-rz-text-secondary">Host: <span className="text-rz-text font-medium">{room.host?.username ?? 'Unknown'}</span></p>
           </div>
@@ -271,6 +289,8 @@ export function PlayPage() {
               <button onClick={() => switchTeam(room, 'A')} disabled={joiningId === room.id || room.status === 'live'} className="btn-ghost flex items-center gap-1 text-sm disabled:opacity-50"><Users className="w-4 h-4" /> Team A</button>
               <button onClick={() => switchTeam(room, 'B')} disabled={joiningId === room.id || room.status === 'live'} className="btn-ghost flex items-center gap-1 text-sm disabled:opacity-50"><Users className="w-4 h-4" /> Team B</button>
               <button onClick={() => leaveRoom(room)} disabled={joiningId === room.id} className="btn-ghost text-rz-warning flex items-center gap-1 text-sm disabled:opacity-50"><LogOut className="w-4 h-4" /> Leave</button>
+              {isHost && room.status === 'live' && <button onClick={() => submitResult(room, 'A')} disabled={joiningId === room.id} className="btn-primary flex items-center gap-1 text-sm disabled:opacity-50"><Trophy className="w-4 h-4" /> Team A Win</button>}
+              {isHost && room.status === 'live' && <button onClick={() => submitResult(room, 'B')} disabled={joiningId === room.id} className="btn-primary flex items-center gap-1 text-sm disabled:opacity-50"><Trophy className="w-4 h-4" /> Team B Win</button>}
               {isHost && <button onClick={() => deleteRoom(room)} disabled={joiningId === room.id} className="btn-ghost text-rz-error flex items-center gap-1 text-sm disabled:opacity-50"><Trash2 className="w-4 h-4" /> Delete</button>}
             </div>
           ) : (
