@@ -71,6 +71,28 @@ export type Match = {
   team2?: Team;
 };
 
+
+export type MatchRoomPlayer = {
+  id: string;
+  room_id: string;
+  profile_id: string;
+  slot: number;
+  joined_at: string;
+  profile?: Profile;
+};
+
+export type MatchRoom = {
+  id: string;
+  mode: '2v2' | '5v5';
+  host_id: string;
+  status: 'waiting' | 'full' | 'live' | 'completed' | 'cancelled';
+  max_players: number;
+  created_at: string;
+  updated_at: string;
+  host?: Profile;
+  players?: MatchRoomPlayer[];
+};
+
 export type Report = {
   id: string;
   reporter_id: string;

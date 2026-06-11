@@ -26,36 +26,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { mountedRef.current = false; };
   }, []);
 
-  const fetchProfile = useCallback(async (userId: string, fallbackEmail?: string | null, fallbackUsername?: string | null) => {
+  const fetchProfile = useCallback(async (userId: string) => {
     if (!isSupabaseAvailable) {
       setProfile(null);
       return;
     }
     try {
-      let { data, error } = await supabase
+      const res = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId)
-        .maybeSingle();
-
-      // Some projects miss the signup trigger. Create the profile from the client as a fallback.
-      if (!data && (!error || error.code === 'PGRST116')) {
-        const username = (fallbackUsername || fallbackEmail?.split('@')[0] || `player_${userId.slice(0, 6)}`)
-          .replace(/[^a-zA-Z0-9_]/g, '_')
-          .slice(0, 24);
-
-        const created = await supabase
-          .from('profiles')
-          .insert({ id: userId, username, role: 'player' })
-          .select('*')
-          .single();
-
-        data = created.data;
-        error = created.error;
-      }
-
+        .single();
       if (mountedRef.current) {
-        setProfile(error ? null : data);
+        setProfile(res.data);
       }
     } catch {
       if (mountedRef.current) {
@@ -78,7 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         setSession(newSession);
         if (newSession?.user) {
-          await fetchProfile(newSession.user.id, newSession.user.email, newSession.user.user_metadata?.username || newSession.user.user_metadata?.full_name || newSession.user.user_metadata?.name);
+          await fetchProfile(newSession.user.id);
         } else {
           setProfile(null);
         }
@@ -148,7 +131,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const refreshProfile = async () => {
-    if (session?.user) await fetchProfile(session.user.id, session.user.email, session.user.user_metadata?.username || session.user.user_metadata?.full_name || session.user.user_metadata?.name);
+    if (session?.user) await fetchProfile(session.user.id);
   };
 
   return (

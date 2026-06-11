@@ -14,18 +14,6 @@ export function TeamsPage() {
   const [selectedTeam, setSelectedTeam] = useState<(Team & { members: Profile[] }) | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const withTimeout = async <T,>(promise: Promise<T>, seconds = 12): Promise<T> => {
-    let timeoutId: ReturnType<typeof setTimeout>;
-    const timeout = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error('Request timed out. Check Supabase connection / RLS policies.')), seconds * 1000);
-    });
-    try {
-      return await Promise.race([promise, timeout]);
-    } finally {
-      clearTimeout(timeoutId!);
-    }
-  };
-
   useEffect(() => {
     if (!isSupabaseAvailable) return;
     fetchTeams();
@@ -45,56 +33,30 @@ export function TeamsPage() {
   };
 
   const createTeam = async () => {
-    if (!isSupabaseAvailable) {
-      setError('Supabase is not connected. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Bolt.');
-      return;
-    }
-    if (!profile) {
-      setError('Profile is not loaded. Sign out and sign in again, then try creating a team.');
-      return;
-    }
-    if (!newName.trim() || !newTag.trim()) return;
-
+    if (!profile || !newName.trim() || !newTag.trim()) return;
     setLoading(true);
     setError(null);
     try {
-      const { data: team, error: insertError } = await withTimeout(
-        supabase.from('teams').insert({
-          name: newName.trim(),
-          tag: newTag.trim().toUpperCase(),
-          captain_id: profile.id,
-        }).select().single()
-      );
-
+      const { data: team, error: insertError } = await supabase.from('teams').insert({
+        name: newName.trim(),
+        tag: newTag.trim().toUpperCase(),
+        captain_id: profile.id,
+      }).select().single();
       if (insertError) {
         setError(insertError.message);
+        setLoading(false);
         return;
       }
-
-      if (!team) {
-        setError('Team was not created. Please try another name/tag.');
-        return;
+      if (team) {
+        await supabase.from('profiles').update({ team_id: team.id, role: 'captain' }).eq('id', profile.id);
+        await refreshProfile();
       }
-
-      const { error: profileError } = await withTimeout(
-        supabase.from('profiles').update({ team_id: team.id, role: 'captain' }).eq('id', profile.id)
-      );
-
-      if (profileError) {
-        setError(profileError.message);
-        return;
-      }
-
-      await refreshProfile();
       setShowCreate(false);
       setNewName('');
       setNewTag('');
-      await fetchTeams();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Network error');
-    } finally {
       setLoading(false);
-    }
+      fetchTeams();
+    } catch { setError('Network error'); setLoading(false); }
   };
 
   const joinTeam = async (teamId: string) => {
