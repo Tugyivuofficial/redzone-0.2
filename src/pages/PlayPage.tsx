@@ -6,7 +6,7 @@ import { useAuth } from '../hooks/useAuth';
 type RoomMode = '2v2' | '5v5';
 const getMaxPlayers = (mode: RoomMode) => (mode === '2v2' ? 4 : 10);
 const halfSlots = (room: MatchRoom) => room.max_players / 2;
-const minTeamPlayers = (room: MatchRoom) => room.mode === '5v5' ? 3 : halfSlots(room);
+const minTeamPlayers = (room: MatchRoom) => room.mode === '5v5' ? 3 : 1;
 
 export function PlayPage() {
   const { session, profile } = useAuth();
