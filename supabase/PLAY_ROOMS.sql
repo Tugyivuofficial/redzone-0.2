@@ -490,20 +490,33 @@ declare
   v_room public.match_rooms%rowtype;
   v_count int;
   v_ready int;
+  v_team_a int;
+  v_team_b int;
+  v_half int;
+  v_min_per_team int;
 begin
   v_profile := rz_current_profile_id();
 
   select * into v_room from public.match_rooms where id = p_room_id for update;
   if not found then raise exception 'Room not found'; end if;
   if v_room.host_id <> v_profile then raise exception 'Only host/captain can start match'; end if;
-  if v_room.status <> 'full' then raise exception 'Room must be full and ready'; end if;
+  if v_room.status not in ('waiting','full') then raise exception 'Room cannot be started'; end if;
 
-  select count(*), count(*) filter (where is_ready)
-  into v_count, v_ready
+  v_half := v_room.max_players / 2;
+  v_min_per_team := case when v_room.mode = '5v5' then 3 else v_half end;
+
+  select
+    count(*),
+    count(*) filter (where is_ready),
+    count(*) filter (where slot <= v_half),
+    count(*) filter (where slot > v_half)
+  into v_count, v_ready, v_team_a, v_team_b
   from public.match_room_players
   where room_id = p_room_id;
 
-  if v_count <> v_room.max_players then raise exception 'Room is not full'; end if;
+  if v_team_a < v_min_per_team or v_team_b < v_min_per_team then
+    raise exception 'Not enough players. Minimum is %v%', v_min_per_team, v_min_per_team;
+  end if;
   if v_ready <> v_count then raise exception 'All players must be ready'; end if;
 
   update public.match_rooms

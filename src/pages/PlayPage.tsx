@@ -6,6 +6,7 @@ import { useAuth } from '../hooks/useAuth';
 type RoomMode = '2v2' | '5v5';
 const getMaxPlayers = (mode: RoomMode) => (mode === '2v2' ? 4 : 10);
 const halfSlots = (room: MatchRoom) => room.max_players / 2;
+const minTeamPlayers = (room: MatchRoom) => room.mode === '5v5' ? 3 : halfSlots(room);
 
 export function PlayPage() {
   const { session, profile } = useAuth();
@@ -274,8 +275,11 @@ export function PlayPage() {
     const half = halfSlots(room);
     const teamA = players.filter(player => player.slot <= half);
     const teamB = players.filter(player => player.slot > half);
+    const minPerTeam = minTeamPlayers(room);
+    const hasEnoughPlayers = teamA.length >= minPerTeam && teamB.length >= minPerTeam;
+    const everyoneReady = players.length > 0 && readyCount === players.length;
     const isHost = profile?.id === room.host_id;
-    const canStart = isHost && room.status === 'full' && players.length === room.max_players && readyCount === players.length;
+    const canStart = isHost && (room.status === 'waiting' || room.status === 'full') && hasEnoughPlayers && everyoneReady;
 
     return (
       <div className="glass rounded-xl p-4 card-hover">
@@ -292,6 +296,7 @@ export function PlayPage() {
             <p className="text-lg font-bold text-rz-accent">{players.length}/{room.max_players}</p>
             <p className="text-xs text-rz-text-muted">players</p>
             <p className="text-xs text-rz-success">Ready {readyCount}/{players.length}</p>
+            <p className="text-xs text-rz-text-muted">Min {room.mode === '5v5' ? '3v3' : '2v2'}</p>
           </div>
         </div>
 
@@ -365,7 +370,7 @@ export function PlayPage() {
         </button>
         <button onClick={() => createRoom('5v5')} disabled={loading || !profile} className="glass rounded-xl p-5 text-left card-hover border border-rz-accent/20 disabled:opacity-50">
           <div className="flex items-center justify-between mb-3"><Gamepad2 className="w-8 h-8 text-rz-accent" /><Plus className="w-5 h-5 text-rz-text-muted" /></div>
-          <h2 className="text-xl font-bold">Create 5v5 Room</h2><p className="text-sm text-rz-text-secondary mt-1">10 players, full match</p>
+          <h2 className="text-xl font-bold">Create 5v5 Room</h2><p className="text-sm text-rz-text-secondary mt-1">Flexible: starts from 3v3, max 5v5</p>
         </button>
       </section>
 
