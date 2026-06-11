@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2A2A2E transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 6px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #2A2A2E;
+    border-radius: 3px;
+  }
+  body {
+    overflow-x: hidden;
+  }
+}
+
+@layer components {
+  .glass {
+    background: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .glass-strong {
+    background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.04) 100%);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  .card-hover {
+    transition: all 0.2s ease;
+  }
+  .card-hover:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    border-color: rgba(225, 29, 72, 0.2);
+  }
+  .btn-primary {
+    @apply bg-rz-accent hover:bg-rz-accent-hover text-white font-semibold px-6 py-2.5 rounded-lg transition-all duration-200 active:scale-95;
+  }
+  .btn-secondary {
+    @apply bg-rz-card hover:bg-rz-border text-rz-text font-medium px-6 py-2.5 rounded-lg border border-rz-border transition-all duration-200 active:scale-95;
+  }
+  .btn-ghost {
+    @apply text-rz-text-secondary hover:text-rz-text hover:bg-rz-card font-medium px-4 py-2 rounded-lg transition-all duration-200;
+  }
+  .input-field {
+    @apply bg-rz-surface border border-rz-border rounded-lg px-4 py-2.5 text-rz-text placeholder-rz-text-muted focus:outline-none focus:border-rz-accent focus:ring-1 focus:ring-rz-accent/30 transition-all duration-200;
+  }
+  .stat-card {
+    @apply glass rounded-xl p-6 card-hover;
+  }
+  .section-title {
+    @apply text-lg font-bold text-rz-text mb-4;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  .badge-live {
+    @apply badge bg-rz-accent/20 text-rz-accent;
+  }
+  .badge-success {
+    @apply badge bg-rz-success/20 text-rz-success;
+  }
+  .badge-warning {
+    @apply badge bg-rz-warning/20 text-rz-warning;
+  }
+  .badge-error {
+    @apply badge bg-rz-error/20 text-rz-error;
+  }
+  .badge-info {
+    @apply badge bg-rz-info/20 text-rz-info;
+  }
+  .sidebar-link {
+    @apply flex items-center gap-3 px-4 py-2.5 rounded-lg text-rz-text-secondary hover:text-rz-text hover:bg-rz-card transition-all duration-200 text-sm font-medium;
+  }
+  .sidebar-link-active {
+    @apply flex items-center gap-3 px-4 py-2.5 rounded-lg bg-rz-accent-dim text-rz-accent text-sm font-semibold;
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.04) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
